@@ -70,143 +70,148 @@ def main ():
     totReverse = 0
     totByScore = [0,0,0,0,0,0]    # indexed by score
     totSplice  = [0,0,0,0,0,0]
+    skipped = 0
 
     clusterDict = cl.ClusterDict()          # annotation matches saved for later pickling
     lastPos = dict()              # current position in SAM file by chr (for sort check)
 
     for line in handle:           # main loop: read the SAM file
 
-        if line.startswith('@'):
-            continue
+        try:
+            if line.startswith('@'):
+                continue
 
-        totReads += 1
+            totReads += 1
 
-        lineFields = line.split('\t')                          # just split it once, not 6 times in list comp
-        if len(lineFields) < 10:
-            raise RuntimeError ('mis-formed SAM line: %s' % line)
-        clusterName, flags, chr, start, cigarString, bases = [lineFields[i] for i in (0,1,2,3,5,9)]
-        flags = int(flags)
+            lineFields = line.split('\t')                          # just split it once, not 6 times in list comp
+            if len(lineFields) < 10:
+                raise RuntimeError ('mis-formed SAM line: %s' % line)
+            clusterName, flags, chr, start, cigarString, bases = [lineFields[i] for i in (0,1,2,3,5,9)]
+            flags = int(flags)
 
-        if flags & FLAG_NOT_ALIGNED:
+            if flags & FLAG_NOT_ALIGNED:
 
-            print '\nisoform:  %-16s' % (clusterName)
+                print '\nisoform:  %-16s' % (clusterName)
 
-            if opt.clusters is not None:                       # print cluster (cl:) lines
-                printClusterReads (clusterList, clusterName)
+                if opt.clusters is not None:                       # print cluster (cl:) lines
+                    printClusterReads (clusterList, clusterName)
 
-            print 'result:   %-50s no_alignment_found' % clusterName,    # no EOL yet
+                print 'result:   %-50s no_alignment_found' % clusterName,    # no EOL yet
 
-            alnReason = re.search(regexUT, line)      # mismatch reason
-            if alnReason is not None:
-                print ' %s' % alnReason.group(1),
-            alnScore  = re.search(regexAS, line)      # alignment score
-            if alnScore is not None:
-                print ' %s' % alnScore.group(1),
-            print
-
-            continue
-
-        totAlign += 1
-
-        start = int(start)
-        if start < lastPos.get(chr, 0):
-            raise RuntimeError ('SAM file is not sorted by position')
-        lastPos[chr] = start
-
-        match = re.search(regexMD, line)
-        if match is not None:                         # if  MD string is present
-            cigar = cs.CigarString(cigarString, start, match.group(1))
-        else:
-            cigar = cs.CigarString(cigarString, start)
-
-        end   = start + cigar.genomicLength() - 1;    # -1 to report last base, rather than last+1
-
-        exons = cigar.exons()
-
-        strand = '-' if (flags & FLAG_REVERSE) else '+'
-
-        if opt.outpickle is not None:
-            myCluster = cl.Cluster(clusterName, flags, chr, start, strand, cigar, bases)    # cigar is a CigarString object
-            clusterDict.addCluster (myCluster)
-
-        print '\nisoform:  %-16s    %9d                    %9d         %-5s  %s  %6d' \
-            % (clusterName, start, end, chr, strand, end-start),
-        if flags & FLAG_SECONDARY:
-            print ' multimap',
-            totMulti += 1
-        print
-
-        print 'cigar:    %s' % cigar.prettyPrint()
-        if cigar.MD is not None:
-            print 'MD:       %s' % cigar.MD
-
-        if opt.vars is not None:                         # print variant (var:) lines
-            cigar.printVariantList(bases)
-
-        if opt.clusters is not None:                     # print cluster (cl:) lines
-            printClusterReads (clusterList, clusterName)
-
-        foundPolyA = False
-        print 'polyA:  ',                                # print 'polyA:' line
-        for motif, offset in polyAFinder.findMotifs (bases, strand, POLYA_REACH):
-            print ' %s: %4d' % (motif, offset),
-            foundPolyA = True
-        print
-
-        # Now let's do the genes...
-
-        # Bump cursor past any genes which end prior to the start of
-        # the current read. We're done looking at them.
-
-        annotCursor.advance (chr, start)
-
-        bestHit = best.Best()
-
-        # Loop through genes this cluster overlaps. Try the aligned
-        # strand first, but if no joy, try the other strand, since
-        # IsoSeq can get it backwards sometimes.
-
-        for str2try in (strand, '-' if strand == '+' else '+'):        # try aligned strand first
-
-            for curGene in annotCursor.getOverlappingGenes (chr, start, end, str2try):
-
-                print 'gene:     %-16s    %9d            %6d             %9d  %5d     %s' \
-                    % (curGene.name, curGene.start, curGene.start-start, curGene.end, curGene.end-end, curGene.strand),
-                if str2try != strand:
-                    print '  rev',
+                alnReason = re.search(regexUT, line)      # mismatch reason
+                if alnReason is not None:
+                    print ' %s' % alnReason.group(1),
+                alnScore  = re.search(regexAS, line)      # alignment score
+                if alnScore is not None:
+                    print ' %s' % alnScore.group(1),
                 print
 
-                bestTran, bestScore = matchTranscripts (exons, curGene)     # match this cluster to all transcripts of gene
-                bestHit.update (bestScore, [curGene, bestTran])             # best transcript of best gene so far?
+                continue
 
-            if bestHit.which > 1:                                           # if decent match found, don't try the other strand
-                break
+            totAlign += 1
 
-        if bestHit.value is None:
-            print 'result:   %-50s no_genes_found' % (clusterName)
-        else:
+            start = int(start)
+            if start < lastPos.get(chr, 0):
+                raise RuntimeError ('SAM file is not sorted by position')
+            lastPos[chr] = start
 
-            bestGene, bestTran = bestHit.which
-            print 'result:   %-50s  %-20s  %-24s  ex: %2d  sc: %d' \
-                % (clusterName, bestGene.name, bestTran.name, len(exons), bestHit.value),
+            match = re.search(regexMD, line)
+            if match is not None:                         # if  MD string is present
+                cigar = cs.CigarString(cigarString, start, match.group(1))
+            else:
+                cigar = cs.CigarString(cigarString, start)
 
-            if bestGene.strand != strand:                                # if best hit was on other strand from alignment
-                print 'rev',
-                totReverse += 1
+            end   = start + cigar.genomicLength() - 1;    # -1 to report last base, rather than last+1
 
-            if bestHit.value >= 3:
-                delta5 = bestTran[0].start - exons[0].start              # 5' delta
-                delta3 = bestTran[-1].end  - exons[-1].end               # 3' delta
-                print ' 5-3: %5d %5d' % (delta5, delta3),
-            print
+            exons = cigar.exons()
 
-            totWithGene += 1
-            totByScore[bestHit.value] += 1
-            if foundPolyA:
-                totSplice[bestHit.value] += 1
+            strand = '-' if (flags & FLAG_REVERSE) else '+'
 
             if opt.outpickle is not None:
-                myCluster.best(bestGene, bestTran, bestScore)            # keep track of best gene in pickle object
+                myCluster = cl.Cluster(clusterName, flags, chr, start, strand, cigar, bases)    # cigar is a CigarString object
+                clusterDict.addCluster (myCluster)
+
+            print '\nisoform:  %-16s    %9d                    %9d         %-5s  %s  %6d' \
+                % (clusterName, start, end, chr, strand, end-start),
+            if flags & FLAG_SECONDARY:
+                print ' multimap',
+                totMulti += 1
+            print
+
+            print 'cigar:    %s' % cigar.prettyPrint()
+            if cigar.MD is not None:
+                print 'MD:       %s' % cigar.MD
+
+            if opt.vars is not None:                         # print variant (var:) lines
+                cigar.printVariantList(bases)
+
+            if opt.clusters is not None:                     # print cluster (cl:) lines
+                printClusterReads (clusterList, clusterName)
+
+            foundPolyA = False
+            print 'polyA:  ',                                # print 'polyA:' line
+            for motif, offset in polyAFinder.findMotifs (bases, strand, POLYA_REACH):
+                print ' %s: %4d' % (motif, offset),
+                foundPolyA = True
+            print
+
+            # Now let's do the genes...
+
+            # Bump cursor past any genes which end prior to the start of
+            # the current read. We're done looking at them.
+
+            annotCursor.advance (chr, start)
+
+            bestHit = best.Best()
+
+            # Loop through genes this cluster overlaps. Try the aligned
+            # strand first, but if no joy, try the other strand, since
+            # IsoSeq can get it backwards sometimes.
+
+            for str2try in (strand, '-' if strand == '+' else '+'):        # try aligned strand first
+
+                for curGene in annotCursor.getOverlappingGenes (chr, start, end, str2try):
+
+                    print 'gene:     %-16s    %9d            %6d             %9d  %5d     %s' \
+                        % (curGene.name, curGene.start, curGene.start-start, curGene.end, curGene.end-end, curGene.strand),
+                    if str2try != strand:
+                        print '  rev',
+                    print
+
+                    bestTran, bestScore = matchTranscripts (exons, curGene)     # match this cluster to all transcripts of gene
+                    bestHit.update (bestScore, [curGene, bestTran])             # best transcript of best gene so far?
+
+                if bestHit.which > 1:                                           # if decent match found, don't try the other strand
+                    break
+
+            if bestHit.value is None:
+                print 'result:   %-50s no_genes_found' % (clusterName)
+            else:
+
+                bestGene, bestTran = bestHit.which
+                print 'result:   %-50s  %-20s  %-24s  ex: %2d  sc: %d' \
+                    % (clusterName, bestGene.name, bestTran.name, len(exons), bestHit.value),
+
+                if bestGene.strand != strand:                                # if best hit was on other strand from alignment
+                    print 'rev',
+                    totReverse += 1
+
+                if bestHit.value >= 3:
+                    delta5 = bestTran[0].start - exons[0].start              # 5' delta
+                    delta3 = bestTran[-1].end  - exons[-1].end               # 3' delta
+                    print ' 5-3: %5d %5d' % (delta5, delta3),
+                print
+
+                totWithGene += 1
+                totByScore[bestHit.value] += 1
+                if foundPolyA:
+                    totSplice[bestHit.value] += 1
+
+                if opt.outpickle is not None:
+                    myCluster.best(bestGene, bestTran, bestScore)            # keep track of best gene in pickle object
+        except RuntimeError:
+            skipped = skipped + 1
+            continue
 
     if opt.outpickle is not None:
         clusterDict.toPickle (opt.outpickle)                             # save matches as pickle file
@@ -218,6 +223,7 @@ def main ():
             print 'summary:   cell %d = %s' % (cellNo, cell)
         print
 
+    print 'summary: %7d isoforms skipped, due to MD tag parsing problems' % skipped
     print 'summary: %7d isoforms read' % totReads
     print 'summary: %7d isoforms aligned, of which %d were multiply mapped' % (totAlign, totMulti)
     print 'summary: %7d isoforms hit at least one gene, of which %d were on opposite strand' % (totWithGene, totReverse)
@@ -398,7 +404,7 @@ def internalMatch (list1, list2):
     the 3' end, at least) by polyadenylation at more sites than the
     annotations record.
     '''
-    
+
     for ix in xrange(1,len(list1)):                    # check starts, skip exon 0
         if list1[ix].start != list2[ix].start:
             return False
@@ -432,7 +438,7 @@ def showCoords (readExons, tranExons):
                 printReadExon (ixR, readExons[ixR])
                 ixR += 1
 
-            else:  
+            else:
 
                 printTranExon (ixT, tranExons[ixT])
                 printStartStop (tranExons, tranExons[ixT])
